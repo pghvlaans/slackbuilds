@@ -1,4 +1,4 @@
-This is the "OpenDoas" port of OpenBSD's doas.
+This is the "OpenDoas" port of OpenBSD's DOAS.
 
 The doas utility is a program originally written for OpenBSD that
 allows a user to run a command as though they were another user,
