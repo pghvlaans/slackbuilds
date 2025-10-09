@@ -4,3 +4,8 @@ multi-language and multi-platform projects.
 Only 1 version of OpenJDK may be installed at a time while building
 Bazel. For example, if both zulu-openjdk8 and zulu-openjdk21 are
 installed, please uninstall zulu-openjdk8 before building Bazel. 
+
+To attempt to build with an OpenJDK implementation other than
+zulu-openjdk21, use J_HOME:
+
+  J_HOME=/usr/lib64/java bazel.SlackBuild
