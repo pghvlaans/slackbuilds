@@ -1,0 +1,471 @@
+From 884d29e5f31b5dec41fdbaa7876458e1b88a28be Mon Sep 17 00:00:00 2001
+From: Simon Ser <contact@emersion.fr>
+Date: Thu, 12 Feb 2026 22:37:41 +0100
+Subject: [PATCH] backend/libinput: guard against new enum entries
+
+When libinput introduces new enum entries, we'd abort or send bogus
+events to the compositor. Instead, log a message and ignore the
+event.
+
+Keep all enums without a default case so that the compiler warns
+when we're missing a case.
+---
+ backend/libinput/events.c      |  12 ++++
+ backend/libinput/keyboard.c    |  23 +++++---
+ backend/libinput/pointer.c     |  60 ++++++++++++-------
+ backend/libinput/switch.c      |  55 ++++++++++++------
+ backend/libinput/tablet_pad.c  |  12 ++--
+ backend/libinput/tablet_tool.c | 102 ++++++++++++++++++++++-----------
+ include/backend/libinput.h     |   2 +
+ 7 files changed, 178 insertions(+), 88 deletions(-)
+
+diff --git a/backend/libinput/events.c b/backend/libinput/events.c
+index 6cfe34e08..9be5def87 100644
+--- a/backend/libinput/events.c
++++ b/backend/libinput/events.c
+@@ -249,3 +249,15 @@ void handle_libinput_event(struct wlr_libinput_backend *backend,
+ 		break;
+ 	}
+ }
++
++bool button_state_from_libinput(enum libinput_button_state state, enum wlr_button_state *out) {
++	switch (state) {
++	case LIBINPUT_BUTTON_STATE_RELEASED:
++		*out = WLR_BUTTON_RELEASED;
++		return true;
++	case LIBINPUT_BUTTON_STATE_PRESSED:
++		*out = WLR_BUTTON_PRESSED;
++		return true;
++	}
++	return false;
++}
+diff --git a/backend/libinput/keyboard.c b/backend/libinput/keyboard.c
+index 7518453e6..a99461040 100644
+--- a/backend/libinput/keyboard.c
++++ b/backend/libinput/keyboard.c
+@@ -2,6 +2,7 @@
+ #include <libinput.h>
+ #include <stdlib.h>
+ #include <wlr/interfaces/wlr_keyboard.h>
++#include <wlr/util/log.h>
+ #include "backend/libinput.h"
+ 
+ struct wlr_libinput_input_device *device_from_keyboard(
+@@ -30,6 +31,18 @@ void init_device_keyboard(struct wlr_libinput_input_device *dev) {
+ 	libinput_device_led_update(dev->handle, 0);
+ }
+ 
++static bool key_state_from_libinput(enum libinput_key_state state, enum wl_keyboard_key_state *out) {
++	switch (state) {
++	case LIBINPUT_KEY_STATE_RELEASED:
++		*out = WL_KEYBOARD_KEY_STATE_RELEASED;
++		return true;
++	case LIBINPUT_KEY_STATE_PRESSED:
++		*out = WL_KEYBOARD_KEY_STATE_PRESSED;
++		return true;
++	}
++	return false;
++}
++
+ void handle_keyboard_key(struct libinput_event *event,
+ 		struct wlr_keyboard *kb) {
+ 	struct libinput_event_keyboard *kbevent =
+@@ -39,13 +52,9 @@ void handle_keyboard_key(struct libinput_event *event,
+ 		.keycode = libinput_event_keyboard_get_key(kbevent),
+ 		.update_state = true,
+ 	};
+-	switch (libinput_event_keyboard_get_key_state(kbevent)) {
+-	case LIBINPUT_KEY_STATE_RELEASED:
+-		wlr_event.state = WL_KEYBOARD_KEY_STATE_RELEASED;
+-		break;
+-	case LIBINPUT_KEY_STATE_PRESSED:
+-		wlr_event.state = WL_KEYBOARD_KEY_STATE_PRESSED;
+-		break;
++	if (!key_state_from_libinput(libinput_event_keyboard_get_key_state(kbevent), &wlr_event.state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput key state");
++		return;
+ 	}
+ 	wlr_keyboard_notify_key(kb, &wlr_event);
+ }
+diff --git a/backend/libinput/pointer.c b/backend/libinput/pointer.c
+index 9b9996780..d09164a71 100644
+--- a/backend/libinput/pointer.c
++++ b/backend/libinput/pointer.c
+@@ -1,6 +1,7 @@
+ #include <assert.h>
+ #include <libinput.h>
+ #include <wlr/interfaces/wlr_pointer.h>
++#include <wlr/util/log.h>
+ #include "backend/libinput.h"
+ 
+ const struct wlr_pointer_impl libinput_pointer_impl = {
+@@ -52,6 +53,38 @@ void handle_pointer_motion_abs(struct libinput_event *event,
+ 	wl_signal_emit_mutable(&pointer->events.frame, pointer);
+ }
+ 
++static bool pointer_button_state_from_libinput(enum libinput_button_state state,
++		enum wl_pointer_button_state *out) {
++	switch (state) {
++	case LIBINPUT_BUTTON_STATE_PRESSED:
++		*out = WL_POINTER_BUTTON_STATE_PRESSED;
++		return true;
++	case LIBINPUT_BUTTON_STATE_RELEASED:
++		*out = WL_POINTER_BUTTON_STATE_RELEASED;
++		return true;
++	}
++	return false;
++}
++
++static bool axis_source_from_libinput(enum libinput_pointer_axis_source source,
++		enum wl_pointer_axis_source *out) {
++	switch (source) {
++	case LIBINPUT_POINTER_AXIS_SOURCE_WHEEL:
++		*out = WL_POINTER_AXIS_SOURCE_WHEEL;
++		return true;
++	case LIBINPUT_POINTER_AXIS_SOURCE_FINGER:
++		*out = WL_POINTER_AXIS_SOURCE_FINGER;
++		return true;
++	case LIBINPUT_POINTER_AXIS_SOURCE_CONTINUOUS:
++		*out = WL_POINTER_AXIS_SOURCE_CONTINUOUS;
++		return true;
++	case LIBINPUT_POINTER_AXIS_SOURCE_WHEEL_TILT:
++		*out = WL_POINTER_AXIS_SOURCE_WHEEL_TILT;
++		return true;
++	}
++	return false;
++}
++
+ void handle_pointer_button(struct libinput_event *event,
+ 		struct wlr_pointer *pointer) {
+ 	struct libinput_event_pointer *pevent =
+@@ -61,13 +94,10 @@ void handle_pointer_button(struct libinput_event *event,
+ 		.time_msec = usec_to_msec(libinput_event_pointer_get_time_usec(pevent)),
+ 		.button = libinput_event_pointer_get_button(pevent),
+ 	};
+-	switch (libinput_event_pointer_get_button_state(pevent)) {
+-	case LIBINPUT_BUTTON_STATE_PRESSED:
+-		wlr_event.state = WL_POINTER_BUTTON_STATE_PRESSED;
+-		break;
+-	case LIBINPUT_BUTTON_STATE_RELEASED:
+-		wlr_event.state = WL_POINTER_BUTTON_STATE_RELEASED;
+-		break;
++	if (!pointer_button_state_from_libinput(libinput_event_pointer_get_button_state(pevent),
++			&wlr_event.state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput button state");
++		return;
+ 	}
+ 	wlr_pointer_notify_button(pointer, &wlr_event);
+ 	wl_signal_emit_mutable(&pointer->events.frame, pointer);
+@@ -81,19 +111,9 @@ void handle_pointer_axis(struct libinput_event *event,
+ 		.pointer = pointer,
+ 		.time_msec = usec_to_msec(libinput_event_pointer_get_time_usec(pevent)),
+ 	};
+-	switch (libinput_event_pointer_get_axis_source(pevent)) {
+-	case LIBINPUT_POINTER_AXIS_SOURCE_WHEEL:
+-		wlr_event.source = WL_POINTER_AXIS_SOURCE_WHEEL;
+-		break;
+-	case LIBINPUT_POINTER_AXIS_SOURCE_FINGER:
+-		wlr_event.source = WL_POINTER_AXIS_SOURCE_FINGER;
+-		break;
+-	case LIBINPUT_POINTER_AXIS_SOURCE_CONTINUOUS:
+-		wlr_event.source = WL_POINTER_AXIS_SOURCE_CONTINUOUS;
+-		break;
+-	case LIBINPUT_POINTER_AXIS_SOURCE_WHEEL_TILT:
+-		wlr_event.source = WL_POINTER_AXIS_SOURCE_WHEEL_TILT;
+-		break;
++	if (!axis_source_from_libinput(libinput_event_pointer_get_axis_source(pevent), &wlr_event.source)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput pointer axis source");
++		return;
+ 	}
+ 	const enum libinput_pointer_axis axes[] = {
+ 		LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL,
+diff --git a/backend/libinput/switch.c b/backend/libinput/switch.c
+index a78d37abe..2055d88f5 100644
+--- a/backend/libinput/switch.c
++++ b/backend/libinput/switch.c
+@@ -1,6 +1,7 @@
+ #include <assert.h>
+ #include <libinput.h>
+ #include <wlr/interfaces/wlr_switch.h>
++#include <wlr/util/log.h>
+ #include "backend/libinput.h"
+ #include "config.h"
+ 
+@@ -23,33 +24,49 @@ struct wlr_libinput_input_device *device_from_switch(
+ 	return dev;
+ }
+ 
+-void handle_switch_toggle(struct libinput_event *event,
+-		struct wlr_switch *wlr_switch) {
+-	struct libinput_event_switch *sevent =
+-		libinput_event_get_switch_event	(event);
+-	struct wlr_switch_toggle_event wlr_event = {
+-		.time_msec = usec_to_msec(libinput_event_switch_get_time_usec(sevent)),
+-	};
+-	switch (libinput_event_switch_get_switch(sevent)) {
++static bool switch_type_from_libinput(enum libinput_switch type, enum wlr_switch_type *out) {
++	switch (type) {
+ 	case LIBINPUT_SWITCH_LID:
+-		wlr_event.switch_type = WLR_SWITCH_TYPE_LID;
+-		break;
++		*out = WLR_SWITCH_TYPE_LID;
++		return true;
+ 	case LIBINPUT_SWITCH_TABLET_MODE:
+-		wlr_event.switch_type = WLR_SWITCH_TYPE_TABLET_MODE;
+-		break;
++		*out = WLR_SWITCH_TYPE_TABLET_MODE;
++		return true;
+ #if HAVE_LIBINPUT_SWITCH_KEYPAD_SLIDE
+ 	case LIBINPUT_SWITCH_KEYPAD_SLIDE:
+-		wlr_event.switch_type = WLR_SWITCH_TYPE_KEYPAD_SLIDE;
+-		break;
++		*out = WLR_SWITCH_TYPE_KEYPAD_SLIDE;
++		return true;
+ #endif
+ 	}
+-	switch (libinput_event_switch_get_switch_state(sevent)) {
++	return false;
++}
++
++static bool switch_state_from_libinput(enum libinput_switch_state state, enum wlr_switch_state *out) {
++	switch (state) {
+ 	case LIBINPUT_SWITCH_STATE_OFF:
+-		wlr_event.switch_state = WLR_SWITCH_STATE_OFF;
+-		break;
++		*out = WLR_SWITCH_STATE_OFF;
++		return true;
+ 	case LIBINPUT_SWITCH_STATE_ON:
+-		wlr_event.switch_state = WLR_SWITCH_STATE_ON;
+-		break;
++		*out = WLR_SWITCH_STATE_ON;
++		return true;
++	}
++	return false;
++}
++
++void handle_switch_toggle(struct libinput_event *event,
++		struct wlr_switch *wlr_switch) {
++	struct libinput_event_switch *sevent =
++		libinput_event_get_switch_event(event);
++	struct wlr_switch_toggle_event wlr_event = {
++		.time_msec = usec_to_msec(libinput_event_switch_get_time_usec(sevent)),
++	};
++	if (!switch_type_from_libinput(libinput_event_switch_get_switch(sevent), &wlr_event.switch_type)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput switch type");
++		return;
++	}
++	if (!switch_state_from_libinput(libinput_event_switch_get_switch_state(sevent), &wlr_event.switch_state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput switch state");
++		return;
+ 	}
+ 	wl_signal_emit_mutable(&wlr_switch->events.toggle, &wlr_event);
+ }
+diff --git a/backend/libinput/tablet_pad.c b/backend/libinput/tablet_pad.c
+index 2fbfb6a6c..9d090198a 100644
+--- a/backend/libinput/tablet_pad.c
++++ b/backend/libinput/tablet_pad.c
+@@ -148,13 +148,9 @@ void handle_tablet_pad_button(struct libinput_event *event,
+ 		.group = libinput_tablet_pad_mode_group_get_index(
+ 			libinput_event_tablet_pad_get_mode_group(pevent)),
+ 	};
+-	switch (libinput_event_tablet_pad_get_button_state(pevent)) {
+-	case LIBINPUT_BUTTON_STATE_PRESSED:
+-		wlr_event.state = WLR_BUTTON_PRESSED;
+-		break;
+-	case LIBINPUT_BUTTON_STATE_RELEASED:
+-		wlr_event.state = WLR_BUTTON_RELEASED;
+-		break;
++	if (!button_state_from_libinput(libinput_event_tablet_pad_get_button_state(pevent), &wlr_event.state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput button state");
++		return;
+ 	}
+ 	wl_signal_emit_mutable(&tablet_pad->events.button, &wlr_event);
+ }
+@@ -168,6 +164,7 @@ void handle_tablet_pad_ring(struct libinput_event *event,
+ 		.ring = libinput_event_tablet_pad_get_ring_number(pevent),
+ 		.position = libinput_event_tablet_pad_get_ring_position(pevent),
+ 		.mode = libinput_event_tablet_pad_get_mode(pevent),
++		.source = WLR_TABLET_PAD_RING_SOURCE_UNKNOWN,
+ 	};
+ 	switch (libinput_event_tablet_pad_get_ring_source(pevent)) {
+ 	case LIBINPUT_TABLET_PAD_RING_SOURCE_UNKNOWN:
+@@ -189,6 +186,7 @@ void handle_tablet_pad_strip(struct libinput_event *event,
+ 		.strip = libinput_event_tablet_pad_get_strip_number(pevent),
+ 		.position = libinput_event_tablet_pad_get_strip_position(pevent),
+ 		.mode = libinput_event_tablet_pad_get_mode(pevent),
++		.source = WLR_TABLET_PAD_STRIP_SOURCE_UNKNOWN,
+ 	};
+ 	switch (libinput_event_tablet_pad_get_strip_source(pevent)) {
+ 	case LIBINPUT_TABLET_PAD_STRIP_SOURCE_UNKNOWN:
+diff --git a/backend/libinput/tablet_tool.c b/backend/libinput/tablet_tool.c
+index b2430a445..782e56a86 100644
+--- a/backend/libinput/tablet_tool.c
++++ b/backend/libinput/tablet_tool.c
+@@ -78,27 +78,61 @@ struct wlr_libinput_input_device *device_from_tablet(
+ 	return dev;
+ }
+ 
+-static enum wlr_tablet_tool_type wlr_type_from_libinput_type(
+-		enum libinput_tablet_tool_type value) {
+-	switch (value) {
++static bool type_from_libinput(enum libinput_tablet_tool_type type,
++		enum wlr_tablet_tool_type *out) {
++	switch (type) {
+ 	case LIBINPUT_TABLET_TOOL_TYPE_PEN:
+-		return WLR_TABLET_TOOL_TYPE_PEN;
++		*out = WLR_TABLET_TOOL_TYPE_PEN;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_ERASER:
+-		return WLR_TABLET_TOOL_TYPE_ERASER;
++		*out = WLR_TABLET_TOOL_TYPE_ERASER;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_BRUSH:
+-		return WLR_TABLET_TOOL_TYPE_BRUSH;
++		*out = WLR_TABLET_TOOL_TYPE_BRUSH;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_PENCIL:
+-		return WLR_TABLET_TOOL_TYPE_PENCIL;
++		*out = WLR_TABLET_TOOL_TYPE_PENCIL;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_AIRBRUSH:
+-		return WLR_TABLET_TOOL_TYPE_AIRBRUSH;
++		*out = WLR_TABLET_TOOL_TYPE_AIRBRUSH;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_MOUSE:
+-		return WLR_TABLET_TOOL_TYPE_MOUSE;
++		*out = WLR_TABLET_TOOL_TYPE_MOUSE;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_LENS:
+-		return WLR_TABLET_TOOL_TYPE_LENS;
++		*out = WLR_TABLET_TOOL_TYPE_LENS;
++		return true;
+ 	case LIBINPUT_TABLET_TOOL_TYPE_TOTEM:
+-		return WLR_TABLET_TOOL_TYPE_TOTEM;
++		*out = WLR_TABLET_TOOL_TYPE_TOTEM;
++		return true;
+ 	}
+-	abort(); // unreachable
++	return false;
++}
++
++static bool proximity_state_from_libinput(enum libinput_tablet_tool_proximity_state state,
++		enum wlr_tablet_tool_proximity_state *out) {
++	switch (state) {
++	case LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_OUT:
++		*out = WLR_TABLET_TOOL_PROXIMITY_OUT;
++		return true;
++	case LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_IN:
++		*out = WLR_TABLET_TOOL_PROXIMITY_IN;
++		return true;
++	}
++	return false;
++}
++
++static bool tip_state_from_libinput(enum libinput_tablet_tool_tip_state state,
++		enum wlr_tablet_tool_tip_state *out) {
++	switch (state) {
++	case LIBINPUT_TABLET_TOOL_TIP_UP:
++		*out = WLR_TABLET_TOOL_TIP_UP;
++		return true;
++	case LIBINPUT_TABLET_TOOL_TIP_DOWN:
++		*out = WLR_TABLET_TOOL_TIP_DOWN;
++		return true;
++	}
++	return false;
+ }
+ 
+ static struct tablet_tool *get_tablet_tool(
+@@ -110,14 +144,19 @@ static struct tablet_tool *get_tablet_tool(
+ 		return tool;
+ 	}
+ 
++	enum wlr_tablet_tool_type type;
++	if (!type_from_libinput(libinput_tablet_tool_get_type(libinput_tool), &type)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput tablet tool type");
++		return NULL;
++	}
++
+ 	tool = calloc(1, sizeof(*tool));
+ 	if (tool == NULL) {
+ 		wlr_log_errno(WLR_ERROR, "failed to allocate wlr_libinput_tablet_tool");
+ 		return NULL;
+ 	}
+ 
+-	tool->wlr_tool.type = wlr_type_from_libinput_type(
+-		libinput_tablet_tool_get_type(libinput_tool));
++	tool->wlr_tool.type = type;
+ 	tool->wlr_tool.hardware_serial =
+ 		libinput_tablet_tool_get_serial(libinput_tool);
+ 	tool->wlr_tool.hardware_wacom =
+@@ -209,14 +248,12 @@ void handle_tablet_tool_proximity(struct libinput_event *event,
+ 		.y = libinput_event_tablet_tool_get_y_transformed(tevent, 1),
+ 	};
+ 
+-	switch (libinput_event_tablet_tool_get_proximity_state(tevent)) {
+-	case LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_OUT:
+-		wlr_event.state = WLR_TABLET_TOOL_PROXIMITY_OUT;
+-		break;
+-	case LIBINPUT_TABLET_TOOL_PROXIMITY_STATE_IN:
+-		wlr_event.state = WLR_TABLET_TOOL_PROXIMITY_IN;
+-		break;
++	if (!proximity_state_from_libinput(libinput_event_tablet_tool_get_proximity_state(tevent),
++			&wlr_event.state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput tablet tool proximity state");
++		return;
+ 	}
++
+ 	wl_signal_emit_mutable(&wlr_tablet->events.proximity, &wlr_event);
+ 
+ 	if (libinput_event_tablet_tool_get_proximity_state(tevent) ==
+@@ -251,14 +288,11 @@ void handle_tablet_tool_tip(struct libinput_event *event,
+ 		.y = libinput_event_tablet_tool_get_y_transformed(tevent, 1),
+ 	};
+ 
+-	switch (libinput_event_tablet_tool_get_tip_state(tevent)) {
+-	case LIBINPUT_TABLET_TOOL_TIP_UP:
+-		wlr_event.state = WLR_TABLET_TOOL_TIP_UP;
+-		break;
+-	case LIBINPUT_TABLET_TOOL_TIP_DOWN:
+-		wlr_event.state = WLR_TABLET_TOOL_TIP_DOWN;
+-		break;
++	if (!tip_state_from_libinput(libinput_event_tablet_tool_get_tip_state(tevent), &wlr_event.state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput tablet tool tip state");
++		return;
+ 	}
++
+ 	wl_signal_emit_mutable(&wlr_tablet->events.tip, &wlr_event);
+ }
+ 
+@@ -277,13 +311,11 @@ void handle_tablet_tool_button(struct libinput_event *event,
+ 		.time_msec = usec_to_msec(libinput_event_tablet_tool_get_time_usec(tevent)),
+ 		.button = libinput_event_tablet_tool_get_button(tevent),
+ 	};
+-	switch (libinput_event_tablet_tool_get_button_state(tevent)) {
+-	case LIBINPUT_BUTTON_STATE_RELEASED:
+-		wlr_event.state = WLR_BUTTON_RELEASED;
+-		break;
+-	case LIBINPUT_BUTTON_STATE_PRESSED:
+-		wlr_event.state = WLR_BUTTON_PRESSED;
+-		break;
++
++	if (!button_state_from_libinput(libinput_event_tablet_tool_get_button_state(tevent), &wlr_event.state)) {
++		wlr_log(WLR_DEBUG, "Unhandled libinput button state");
++		return;
+ 	}
++
+ 	wl_signal_emit_mutable(&wlr_tablet->events.button, &wlr_event);
+ }
+diff --git a/include/backend/libinput.h b/include/backend/libinput.h
+index 874e9aa1f..e7123884e 100644
+--- a/include/backend/libinput.h
++++ b/include/backend/libinput.h
+@@ -132,4 +132,6 @@ void handle_tablet_pad_ring(struct libinput_event *event,
+ void handle_tablet_pad_strip(struct libinput_event *event,
+ 	struct wlr_tablet_pad *tablet_pad);
+ 
++bool button_state_from_libinput(enum libinput_button_state state, enum wlr_button_state *out);
++
+ #endif
+-- 
+GitLab
+
