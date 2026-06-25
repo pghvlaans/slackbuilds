@@ -5,6 +5,6 @@ DOWNLOAD="https://github.com/naihe2010/apvlv/archive/v0.6.0-final/apvlv-0.6.0-fi
 MD5SUM="303470053f3a35bbb7eb8c76160188ea"
 DOWNLOAD_x86_64=""
 MD5SUM_x86_64=""
-REQUIRES="webkit2gtk"
+REQUIRES="webkit2gtk4.1"
 MAINTAINER="orphaned - no maintainer"
 EMAIL="NOEMAIL"
