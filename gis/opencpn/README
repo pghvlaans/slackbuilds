@@ -5,4 +5,4 @@ world conditions for program testing and refinement.
 
 If you are upgrading or installing new, OpenCPN 5.2.x needs wxGTK3
 to be built with webkit support.  So you will have to install
-webkit2gtk, available here at SBo, then build and install wxGTK3.
+webkit2gtk4.1, available here at SBo, then build and install wxGTK3.
