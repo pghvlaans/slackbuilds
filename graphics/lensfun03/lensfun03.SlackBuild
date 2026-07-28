@@ -27,7 +27,7 @@ cd $(dirname $0) ; CWD=$(pwd)
 
 PRGNAM=lensfun03
 SRCNAM=lensfun
-VERSION=${VERSION:-0.3.3}
+VERSION=${VERSION:-0.3.4}
 BUILD=${BUILD:-2}
 TAG=${TAG:-_SBo}
 PKGTYPE=${PKGTYPE:-tgz}
